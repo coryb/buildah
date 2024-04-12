@@ -77,6 +77,10 @@ type StageExecutor struct {
 	argsFromContainerfile []string
 }
 
+func (s *StageExecutor) hasCacheFrom() bool {
+	return len(s.executor.cacheFrom) != 0 || len(s.executor.cacheFromGenericSource) != 0
+}
+
 // Preserve informs the stage executor that from this point on, it needs to
 // ensure that only COPY and ADD instructions can modify the contents of this
 // directory or anything below it.
@@ -1142,10 +1146,10 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 	}
 	// logCachePulled produces build log for cases when `--cache-from`
 	// is used and a valid intermediate image is pulled from remote source.
-	logCachePulled := func(cacheKey string, remote reference.Named) {
+	logCachePulled := func(cacheKey string, source string) {
 		if !s.executor.quiet {
-			cachePullMessage := "--> Cache pulled from remote"
-			fmt.Fprintf(s.executor.out, "%s %s\n", cachePullMessage, fmt.Sprintf("%s:%s", remote.String(), cacheKey))
+			cachePullMessage := "--> Cache pulled from cache source"
+			fmt.Fprintf(s.executor.out, "%s %s\n", cachePullMessage, fmt.Sprintf("%s:%s", source, cacheKey))
 		}
 	}
 	// logCachePush produces build log for cases when `--cache-to`
@@ -1411,7 +1415,7 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 			}
 		}
 
-		needsCacheKey := (len(s.executor.cacheFrom) != 0 && !avoidLookingCache) || len(s.executor.cacheTo) != 0
+		needsCacheKey := (s.hasCacheFrom() && !avoidLookingCache) || len(s.executor.cacheTo) != 0
 
 		// If we have to commit for this instruction, only assign the
 		// stage's configured output name to the last layer.
@@ -1463,12 +1467,12 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 			}
 			// All the best effort to find cache on localstorage have failed try pulling
 			// cache from remote repo if `--cache-from` was configured.
-			if cacheID == "" && len(s.executor.cacheFrom) != 0 {
+			if cacheID == "" && s.hasCacheFrom() {
 				// only attempt to use cache again if pulling was successful
 				// otherwise do nothing and attempt to run the step, err != nil
 				// is ignored and will be automatically logged for --log-level debug
-				if ref, id, err := s.pullCache(ctx, cacheKey); ref != nil && id != "" && err == nil {
-					logCachePulled(cacheKey, ref)
+				if source, id, err := s.pullCache(ctx, cacheKey); source != "" && id != "" && err == nil {
+					logCachePulled(cacheKey, source)
 					cacheID, err = s.intermediateImageExists(ctx, node, addedContentSummary, s.stepRequiresLayer(step))
 					if err != nil {
 						return "", nil, false, fmt.Errorf("checking if cached image exists from a previous build: %w", err)
@@ -1517,12 +1521,12 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 				// All the best effort to find cache on localstorage have failed try pulling
 				// cache from remote repo if `--cache-from` was configured and cacheKey was
 				// generated again after adding content summary.
-				if cacheID == "" && len(s.executor.cacheFrom) != 0 {
+				if cacheID == "" && s.hasCacheFrom() {
 					// only attempt to use cache again if pulling was successful
 					// otherwise do nothing and attempt to run the step, err != nil
 					// is ignored and will be automatically logged for --log-level debug
-					if ref, id, err := s.pullCache(ctx, cacheKey); ref != nil && id != "" && err == nil {
-						logCachePulled(cacheKey, ref)
+					if source, id, err := s.pullCache(ctx, cacheKey); source != "" && id != "" && err == nil {
+						logCachePulled(cacheKey, source)
 						cacheID, err = s.intermediateImageExists(ctx, node, addedContentSummary, s.stepRequiresLayer(step))
 						if err != nil {
 							return "", nil, false, fmt.Errorf("checking if cached image exists from a previous build: %w", err)
@@ -2007,24 +2011,34 @@ func (s *StageExecutor) pushCache(ctx context.Context, src, cacheKey string) err
 // or a newer version of cache was found in the upstream repo. If new
 // image was pulled function returns image id otherwise returns empty
 // string "" or error if any error was encontered while pulling the cache.
-func (s *StageExecutor) pullCache(ctx context.Context, cacheKey string) (reference.Named, string, error) {
-	srcList, err := cacheImageReferences(s.executor.cacheFrom, cacheKey)
+func (s *StageExecutor) pullCache(ctx context.Context, cacheKey string) (string, string, error) {
+	remoteSrcList, err := cacheImageReferences(s.executor.cacheFrom, cacheKey)
 	if err != nil {
-		return nil, "", err
+		return "", "", err
 	}
-	for _, src := range srcList {
-		logrus.Debugf("trying to pull cache from remote repo: %+v", src.DockerReference())
-		options := buildah.PullOptions{
-			SignaturePolicyPath: s.executor.signaturePolicyPath,
-			Store:               s.executor.store,
-			SystemContext:       s.executor.systemContext,
-			BlobDirectory:       s.executor.blobDirectory,
-			MaxRetries:          s.executor.maxPullPushRetries,
-			RetryDelay:          s.executor.retryPullPushDelay,
-			AllTags:             false,
-			ReportWriter:        nil,
-			PullPolicy:          define.PullIfNewer,
+	options := buildah.PullOptions{
+		SignaturePolicyPath: s.executor.signaturePolicyPath,
+		Store:               s.executor.store,
+		SystemContext:       s.executor.systemContext,
+		BlobDirectory:       s.executor.blobDirectory,
+		MaxRetries:          s.executor.maxPullPushRetries,
+		RetryDelay:          s.executor.retryPullPushDelay,
+		AllTags:             false,
+		ReportWriter:        nil,
+		PullPolicy:          define.PullIfNewer,
+	}
+	for _, src := range s.executor.cacheFromGenericSource {
+		logrus.Debugf("trying to pull cache from generic source: %s", src)
+		id, err := buildah.Pull(ctx, src, options)
+		if err != nil {
+			logrus.Debugf("failed pulling cache from source %s: %v", src, err)
+			continue // failed pulling this one try next
 		}
+		logrus.Debugf("successfully pulled cache from %s: %s", src, id)
+		return src, id, nil
+	}
+	for _, src := range remoteSrcList {
+		logrus.Debugf("trying to pull cache from remote repo: %+v", src.DockerReference())
 		id, err := buildah.Pull(ctx, src.DockerReference().String(), options)
 		if err != nil {
 			logrus.Debugf("failed pulling cache from source %s: %v", src, err)
@@ -2032,9 +2046,9 @@ func (s *StageExecutor) pullCache(ctx context.Context, cacheKey string) (referen
 			//return "", fmt.Errorf("failed while pulling cache from %q: %w", src, err)
 		}
 		logrus.Debugf("successfully pulled cache from repo %s: %s", src, id)
-		return src.DockerReference(), id, nil
+		return src.DockerReference().String(), id, nil
 	}
-	return nil, "", fmt.Errorf("failed pulling cache from all available sources %q", srcList)
+	return "", "", fmt.Errorf("failed pulling cache from all available sources %q %q", s.executor.cacheFromGenericSource, remoteSrcList)
 }
 
 // intermediateImageExists returns true if an intermediate image of currNode exists in the image store from a previous build.

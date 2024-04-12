@@ -146,6 +146,10 @@ type BuildOptions struct {
 	// CacheFrom specifies any remote repository which can be treated as
 	// potential cache source.
 	CacheFrom []reference.Named
+	// CacheFromGenericSource specifies any remote source which can be
+	// treated as potential cache source (not just repositories on
+	// registries).
+	CacheFromGenericSource []string
 	// CacheTo specifies any remote repository which can be treated as
 	// potential cache destination.
 	CacheTo []reference.Named

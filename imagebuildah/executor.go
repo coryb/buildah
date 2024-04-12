@@ -62,6 +62,7 @@ var builtinAllowedBuildArgs = map[string]struct{}{
 // StageExecutors to handle each stage of the build.
 type Executor struct {
 	cacheFrom                      []reference.Named
+	cacheFromGenericSource         []string
 	cacheTo                        []reference.Named
 	cacheTTL                       time.Duration
 	containerSuffix                string
@@ -223,6 +224,7 @@ func newExecutor(logger *logrus.Logger, logPrefix string, store storage.Store, o
 	exec := Executor{
 		args:                           options.Args,
 		cacheFrom:                      options.CacheFrom,
+		cacheFromGenericSource:         options.CacheFromGenericSource,
 		cacheTo:                        options.CacheTo,
 		cacheTTL:                       options.CacheTTL,
 		containerSuffix:                options.ContainerSuffix,
