@@ -62,6 +62,7 @@ func Pull(ctx context.Context, imageName string, options PullOptions) (imageID s
 	libimageOptions.OciDecryptConfig = options.OciDecryptConfig
 	libimageOptions.AllTags = options.AllTags
 	libimageOptions.RetryDelay = &options.RetryDelay
+	libimageOptions.SourceLookupReferenceFunc = cacheLookupReferenceFunc(options.BlobDirectory, types.Decompress)
 	libimageOptions.DestinationLookupReferenceFunc = cacheLookupReferenceFunc(options.BlobDirectory, types.PreserveOriginal)
 
 	if options.MaxRetries > 0 {

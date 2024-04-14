@@ -159,6 +159,7 @@ func newBuilder(ctx context.Context, store storage.Store, options BuilderOptions
 		pullOptions.OciDecryptConfig = options.OciDecryptConfig
 		pullOptions.SignaturePolicyPath = options.SignaturePolicyPath
 		pullOptions.Writer = options.ReportWriter
+		pullOptions.SourceLookupReferenceFunc = cacheLookupReferenceFunc(options.BlobDirectory, types.Decompress)
 		pullOptions.DestinationLookupReferenceFunc = cacheLookupReferenceFunc(options.BlobDirectory, types.PreserveOriginal)
 
 		maxRetries := uint(options.MaxPullRetries)
